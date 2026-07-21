@@ -3,14 +3,10 @@
 ################################################################################
 #                                                                              #
 #   INSTALADOR AUTOMÁTICO - ARCH LINUX + HYPRLAND + CAELESTIA SHELL          #
-#   Versão: 2.0                                                               #
+#   Versão: 3.0 (corrigida)                                                   #
 #   Criado para: HP EliteBook 845 G7                                          #
 #                                                                              #
 ################################################################################
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CORES E ESTILOS
-# ═════════════════════════════════════════════════════════════════════════════
 
 VERDE='\033[0;32m'
 AZUL='\033[0;34m'
@@ -22,64 +18,48 @@ SEM_COR='\033[0m'
 NEGRITO='\033[1m'
 SUBLINHADO='\033[4m'
 
-# ═════════════════════════════════════════════════════════════════════════════
-# FUNÇÕES AUXILIARES
-# ═════════════════════════════════════════════════════════════════════════════
+LOG_DIR="/tmp/arch-installer-logs"
+INSTALL_LOG="$LOG_DIR/install.log"
+CAELESTIA_LOG="$LOG_DIR/caelestia-build.log"
+mkdir -p "$LOG_DIR"
 
-# Função para limpar tela
-limpar() {
-    clear
-}
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$INSTALL_LOG"; }
 
-# Função para exibir cabeçalho
+limpar() { clear; }
+
 cabecalho() {
     limpar
     echo -e "${AZUL}${SUBLINHADO}════════════════════════════════════════════════════════════════${SEM_COR}"
     echo ""
     echo -e "  ${VERDE}${NEGRITO}🐧 INSTALADOR AUTOMÁTICO ARCH LINUX${SEM_COR}"
-    echo -e "  ${ROXO}${NEGRITO}✨ HYPRLAND + CAELESTIA SHELL${SEM_COR}"
+    echo -e "  ${ROXO}${NEGRITO}✨ HYPRLAND + CAELESTIA SHELL (v3.0)${SEM_COR}"
     echo ""
     echo -e "${AZUL}${SUBLINHADO}════════════════════════════════════════════════════════════════${SEM_COR}\n"
 }
 
-# Função para sucesso
-sucesso() {
-    echo -e "${VERDE}${NEGRITO}✓ $1${SEM_COR}"
-}
+sucesso() { echo -e "${VERDE}${NEGRITO}✓ $1${SEM_COR}"; log "OK: $1"; }
+erro()    { echo -e "${VERMELHO}${NEGRITO}✗ ERRO: $1${SEM_COR}"; log "ERRO: $1"; }
+info()    { echo -e "${CIANO}${NEGRITO}ℹ $1${SEM_COR}"; log "INFO: $1"; }
+aviso()   { echo -e "${AMARELO}${NEGRITO}⚠ $1${SEM_COR}"; log "AVISO: $1"; }
 
-# Função para erro
-erro() {
-    echo -e "${VERMELHO}${NEGRITO}✗ ERRO: $1${SEM_COR}"
-}
-
-# Função para informação
-info() {
-    echo -e "${CIANO}${NEGRITO}ℹ $1${SEM_COR}"
-}
-
-# Função para aviso
-aviso() {
-    echo -e "${AMARELO}${NEGRITO}⚠ $1${SEM_COR}"
-}
-
-# Função para pausar
 pausa() {
     echo ""
     echo -e "${AMARELO}Pressione [ENTER] para continuar...${SEM_COR}"
     read -r
 }
 
-# Função para verificar se está em root
 verificar_root() {
     if [[ $EUID -ne 0 ]]; then
         erro "Este script precisa ser executado com sudo!"
-        echo ""
         echo "Execute: sudo bash $0"
+        exit 1
+    fi
+    if [[ -z "$SUDO_USER" ]]; then
+        erro "Rode com 'sudo bash $0', não como root direto (preciso saber qual é seu usuário normal)."
         exit 1
     fi
 }
 
-# Função para verificar internet
 verificar_internet() {
     if ! ping -c 1 8.8.8.8 &> /dev/null; then
         erro "Sem conexão com a internet!"
@@ -89,319 +69,307 @@ verificar_internet() {
     sucesso "Conexão com internet verificada!"
 }
 
-# Função para atualizar pacman
 atualizar_sistema() {
     info "Sincronizando repositórios..."
     pacman -Sy --noconfirm
     sucesso "Repositórios sincronizados!"
-    
     info "Atualizando sistema (pode levar alguns minutos)..."
     pacman -Syu --noconfirm
     sucesso "Sistema atualizado!"
 }
 
-# Função para instalar pacote com verificação
 instalar_pacote() {
     local pacote=$1
     local descricao=${2:-$pacote}
-    
     if pacman -Qi "$pacote" &> /dev/null; then
         info "$descricao já está instalado"
+        return 0
     else
-        echo -e "${AMARELO}[...] Instalando $descricao...${SEM_COR}"
-        if pacman -S --needed --noconfirm "$pacote"; then
+        echo -e "${AMARELO}[...] Instalando $descricao (pacman)...${SEM_COR}"
+        if pacman -S --needed --noconfirm "$pacote" >> "$INSTALL_LOG" 2>&1; then
             sucesso "$descricao instalado com sucesso!"
+            return 0
         else
-            erro "Falha ao instalar $descricao"
+            erro "Falha ao instalar $descricao via pacman"
             return 1
         fi
     fi
 }
 
-# Função para instalar múltiplos pacotes
 instalar_multiplos() {
     local pacotes=("$@")
-    
     for pacote in "${pacotes[@]}"; do
         instalar_pacote "$pacote"
     done
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# FUNÇÕES PRINCIPAIS
-# ═════════════════════════════════════════════════════════════════════════════
+# Tenta pacman, e se o pacote não existir no repo oficial, cai pro AUR (yay)
+instalar_pacote_universal() {
+    local pacote=$1
+    local descricao=${2:-$pacote}
 
-# 1. SETUP INICIAL
+    if pacman -Qi "$pacote" &> /dev/null; then
+        info "$descricao já está instalado"
+        return 0
+    fi
+
+    if pacman -Si "$pacote" &> /dev/null; then
+        instalar_pacote "$pacote" "$descricao"
+        return $?
+    fi
+
+    if ! command -v yay &> /dev/null; then
+        aviso "$descricao só existe no AUR e o 'yay' não está instalado."
+        FALTANTES_AUR+=("$pacote")
+        return 1
+    fi
+
+    echo -e "${AMARELO}[...] Instalando $descricao via AUR (yay)...${SEM_COR}"
+    if sudo -u "$SUDO_USER" yay -S --needed --noconfirm "$pacote" >> "$INSTALL_LOG" 2>&1; then
+        sucesso "$descricao instalado com sucesso via AUR!"
+        return 0
+    else
+        erro "Falha ao instalar $descricao via AUR"
+        return 1
+    fi
+}
+
+detectar_gpu_instalar_drivers() {
+    info "Detectando GPU..."
+    local gpu_info
+    gpu_info=$(lspci 2>/dev/null | grep -iE 'vga|3d|display')
+    echo -e "${CIANO}$gpu_info${SEM_COR}"
+
+    local pacotes=("mesa" "lib32-mesa")
+
+    if echo "$gpu_info" | grep -qi amd; then
+        sucesso "GPU AMD detectada"
+        pacotes+=("vulkan-radeon" "lib32-vulkan-radeon" "amd-ucode" "libva-mesa-driver" "lib32-libva-mesa-driver")
+    elif echo "$gpu_info" | grep -qi nvidia; then
+        sucesso "GPU NVIDIA detectada"
+        pacotes+=("nvidia" "nvidia-utils" "lib32-nvidia-utils")
+    elif echo "$gpu_info" | grep -qi intel; then
+        sucesso "GPU Intel detectada"
+        pacotes+=("vulkan-intel" "lib32-vulkan-intel" "intel-media-driver")
+    else
+        aviso "GPU não identificada automaticamente. Instalando apenas mesa (genérico)."
+    fi
+
+    instalar_multiplos "${pacotes[@]}"
+}
+
 setup_inicial() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[1] SETUP INICIAL${SEM_COR}\n"
-    
     info "Verificando requisitos..."
     pausa
-    
     verificar_internet
     echo ""
-    
+
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
+
     info "Criando diretórios necessários..."
-    mkdir -p ~/.config/hypr
-    mkdir -p ~/.config/foot
-    mkdir -p ~/.local/share/applications
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.config/hypr"
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.config/foot"
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.config/quickshell"
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.local/share/applications"
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.local/bin"
     sucesso "Diretórios criados!"
     echo ""
-    
+
     info "Atualizando banco de dados de pacotes..."
     atualizar_sistema
     echo ""
-    
     sucesso "Setup inicial concluído!"
     pausa
 }
 
-# 2. INSTALAR DEPENDÊNCIAS BÁSICAS
 instalar_dependencias_basicas() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[2] INSTALANDO DEPENDÊNCIAS BÁSICAS${SEM_COR}\n"
-    
-    local deps_basicas=(
-        "base-devel"
-        "git"
-        "cmake"
-        "ninja"
-        "vim"
-        "nano"
-        "wget"
-        "curl"
-        "htop"
-        "neofetch"
-    )
-    
-    echo -e "${AMARELO}Instalando ferramentas básicas...${SEM_COR}"
+    local deps_basicas=("base-devel" "git" "cmake" "ninja" "pkgconf" "vim" "nano" "wget" "curl" "htop" "neofetch")
     instalar_multiplos "${deps_basicas[@]}"
-    echo ""
-    
     sucesso "Dependências básicas instaladas!"
     pausa
 }
 
-# 3. INSTALAR HYPRLAND
 instalar_hyprland() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[3] INSTALANDO HYPRLAND${SEM_COR}\n"
-    
-    local hyprland_deps=(
-        "hyprland"
-        "hyprland-protocols"
-        "xdg-desktop-portal-hyprland"
-        "wayland"
-        "wayland-protocols"
-        "egl-wayland"
-    )
-    
-    echo -e "${AMARELO}Instalando Hyprland e dependências...${SEM_COR}"
+    local hyprland_deps=("hyprland" "hyprland-protocols" "xdg-desktop-portal-hyprland" "wayland" "wayland-protocols" "egl-wayland" "polkit" "seatd")
     instalar_multiplos "${hyprland_deps[@]}"
-    echo ""
-    
+    systemctl enable --now seatd 2>/dev/null || true
     sucesso "Hyprland instalado com sucesso!"
     pausa
 }
 
-# 4. INSTALAR DRIVERS GRÁFICOS
 instalar_drivers() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[4] INSTALANDO DRIVERS GRÁFICOS${SEM_COR}\n"
-    
-    local gpu_drivers=(
-        "mesa"
-        "lib32-mesa"
-        "vulkan-radeon"
-        "lib32-vulkan-radeon"
-        "amd-ucode"
-        "libva-mesa-driver"
-        "lib32-libva-mesa-driver"
-    )
-    
-    echo -e "${AMARELO}Instalando drivers para GPU AMD...${SEM_COR}"
-    instalar_multiplos "${gpu_drivers[@]}"
-    echo ""
-    
+    detectar_gpu_instalar_drivers
     sucesso "Drivers gráficos instalados!"
     pausa
 }
 
-# 5. INSTALAR AUDIO (PipeWire)
 instalar_audio() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[5] INSTALANDO PIPEWIRE${SEM_COR}\n"
-    
-    local audio_packages=(
-        "pipewire"
-        "pipewire-pulse"
-        "pipewire-alsa"
-        "wireplumber"
-        "pavucontrol"
-    )
-    
-    echo -e "${AMARELO}Instalando PipeWire e dependências...${SEM_COR}"
+    local audio_packages=("pipewire" "pipewire-pulse" "pipewire-alsa" "pipewire-jack" "wireplumber" "pavucontrol")
     instalar_multiplos "${audio_packages[@]}"
-    echo ""
-    
-    # Ativa PipeWire
-    systemctl --user enable --now pipewire wireplumber 2>/dev/null || true
-    
-    sucesso "PipeWire instalado e ativado!"
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" \
+        systemctl --user enable --now pipewire pipewire-pulse wireplumber 2>/dev/null || \
+        aviso "Não foi possível ativar o PipeWire agora (normal sem sessão gráfica ativa)."
+    sucesso "PipeWire instalado!"
     pausa
 }
 
-# 6. INSTALAR TERMINAIS
 instalar_terminais() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[6] INSTALANDO TERMINAIS${SEM_COR}\n"
-    
-    local terminais=(
-        "foot"
-        "alacritty"
-        "kitty"
-    )
-    
-    echo -e "${AMARELO}Instalando emuladores de terminal...${SEM_COR}"
-    instalar_multiplos "${terminais[@]}"
-    echo ""
-    
+    instalar_multiplos "foot" "alacritty" "kitty"
     sucesso "Terminais instalados!"
     pausa
 }
 
-# 7. INSTALAR FERRAMENTAS DE SISTEMA
 instalar_ferramentas_sistema() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[7] INSTALANDO FERRAMENTAS DE SISTEMA${SEM_COR}\n"
-    
-    local ferramentas=(
-        "networkmanager"
-        "network-manager-applet"
-        "bluez"
-        "bluez-utils"
-        "brightnessctl"
-        "pulseaudio-alsa"
-        "alsa-utils"
-        "dunst"
-        "rofi"
-        "feh"
-        "flameshot"
-        "thunar"
-    )
-    
-    echo -e "${AMARELO}Instalando ferramentas de sistema...${SEM_COR}"
+    local ferramentas=("networkmanager" "network-manager-applet" "bluez" "bluez-utils" "brightnessctl" "alsa-utils" "dunst" "rofi" "feh" "flameshot" "thunar" "jq")
     instalar_multiplos "${ferramentas[@]}"
-    echo ""
-    
-    # Ativa NetworkManager
     systemctl enable --now NetworkManager 2>/dev/null || true
-    
+    systemctl enable --now bluetooth 2>/dev/null || true
     sucesso "Ferramentas de sistema instaladas!"
     pausa
 }
 
-# 8. INSTALAR CAELESTIA SHELL
+instalar_yay() {
+    if command -v yay &> /dev/null; then
+        info "yay já está instalado"
+        return 0
+    fi
+    info "Instalando 'yay' (necessário para pacotes do AUR como o quickshell)..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    chown "$SUDO_USER":"$SUDO_USER" "$tmp_dir"
+    if sudo -u "$SUDO_USER" git clone https://aur.archlinux.org/yay.git "$tmp_dir/yay" >> "$INSTALL_LOG" 2>&1 && \
+       (cd "$tmp_dir/yay" && sudo -u "$SUDO_USER" makepkg -si --noconfirm >> "$INSTALL_LOG" 2>&1); then
+        sucesso "yay instalado com sucesso!"
+        rm -rf "$tmp_dir"
+        return 0
+    else
+        erro "Falha ao instalar o yay. Veja o log: $INSTALL_LOG"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+}
+
 instalar_caelestia() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[8] INSTALANDO CAELESTIA SHELL${SEM_COR}\n"
-    
-    local usuario_home=$(eval echo ~${SUDO_USER})
-    local caelestia_dir="$usuario_home/.config/hypr/caelestia"
-    
-    info "Instalando dependências do Caelestia..."
-    
-    local caelestia_deps=(
-        "qt5-base"
-        "qt5-declarative"
-        "qt6-base"
-        "qt6-declarative"
-        "libqalculate"
-        "material-symbols"
-        "fish"
-        "lm_sensors"
-        "ddcutil"
-        "aubio"
-        "gcc-libs"
-        "glibc"
-        "libpipewire"
-    )
-    
-    instalar_multiplos "${caelestia_deps[@]}"
+
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
+    # Local CORRETO exigido pelo Quickshell
+    local caelestia_dir="$usuario_home/.config/quickshell/caelestia"
+    FALTANTES_AUR=()
+
+    aviso "A doc oficial recomenda instalar via AUR (pacote 'caelestia-shell'), que resolve build e deps sozinho."
     echo ""
-    
-    info "Clonando repositório Caelestia Shell..."
-    
-    # Remove diretório antigo se existir
-    if [ -d "$caelestia_dir" ]; then
-        aviso "Diretório Caelestia já existe. Removendo..."
-        rm -rf "$caelestia_dir"
-    fi
-    
-    # Clona o repositório
-    if git clone https://github.com/caelestia-dots/shell "$caelestia_dir"; then
-        sucesso "Repositório clonado com sucesso!"
-    else
-        erro "Falha ao clonar repositório Caelestia!"
-        pausa
-        return 1
-    fi
-    echo ""
-    
-    info "Compilando Caelestia Shell..."
-    cd "$caelestia_dir" || return 1
-    
-    if [ -f "CMakeLists.txt" ]; then
-        # Limpa build anterior
-        rm -rf build
-        
-        # Compila
-        if cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-           cmake --build build && \
-           sudo cmake --install build; then
-            sucesso "Caelestia Shell compilado e instalado!"
+    echo -ne "${AMARELO}Instalar via AUR/yay (recomendado) [R] ou manualmente com git+cmake [M]? ${SEM_COR}"
+    read -r modo
+
+    instalar_yay || { aviso "Sem yay não dá pra instalar quickshell/caelestia-cli (só existem no AUR)."; pausa; return 1; }
+
+    if [[ "$modo" =~ ^[Rr]$ ]] || [[ -z "$modo" ]]; then
+        info "Instalando caelestia-shell via AUR..."
+        if sudo -u "$SUDO_USER" yay -S --needed --noconfirm caelestia-shell >> "$INSTALL_LOG" 2>&1; then
+            sucesso "Caelestia Shell instalado via AUR com sucesso!"
         else
-            erro "Falha ao compilar Caelestia Shell!"
+            erro "Falha ao instalar via AUR. Veja o log: $INSTALL_LOG"
+            aviso "Tentando instalação manual como alternativa..."
+            modo="M"
+        fi
+    fi
+
+    if [[ "$modo" =~ ^[Mm]$ ]]; then
+        info "Instalando dependências oficiais..."
+        local deps_oficiais=("qt6-base" "qt6-declarative" "glibc" "gcc-libs" "bash" "libqalculate" "networkmanager" "lm_sensors" "fish" "aubio" "libpipewire" "ddcutil" "brightnessctl" "swappy")
+        instalar_multiplos "${deps_oficiais[@]}"
+
+        info "Instalando dependências do AUR (quickshell-git, caelestia-cli, fontes)..."
+        instalar_pacote_universal "quickshell-git" "Quickshell (versão git, obrigatória)"
+        instalar_pacote_universal "caelestia-cli" "Caelestia CLI"
+        instalar_pacote_universal "libcava" "libcava"
+        instalar_pacote_universal "ttf-material-symbols-variable-git" "Material Symbols"
+        instalar_pacote_universal "ttf-caskaydia-cove-nerd" "Caskaydia Cove Nerd Font"
+
+        if [ ${#FALTANTES_AUR[@]} -gt 0 ]; then
+            erro "Não instalados: ${FALTANTES_AUR[*]}"
+            aviso "Instale manualmente com: yay -S ${FALTANTES_AUR[*]}"
+            pausa
+        fi
+
+        info "Clonando repositório em $caelestia_dir ..."
+        if [ -d "$caelestia_dir" ]; then
+            aviso "Diretório já existe. Removendo para reinstalar..."
+            rm -rf "$caelestia_dir"
+        fi
+        sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.config/quickshell"
+
+        if sudo -u "$SUDO_USER" git clone https://github.com/caelestia-dots/shell.git "$caelestia_dir" >> "$INSTALL_LOG" 2>&1; then
+            sucesso "Repositório clonado com sucesso!"
+        else
+            erro "Falha ao clonar repositório! Veja: $INSTALL_LOG"
             pausa
             return 1
         fi
-    else
-        erro "CMakeLists.txt não encontrado no repositório!"
-        pausa
-        return 1
+
+        info "Compilando (log completo em $CAELESTIA_LOG)..."
+        (
+            cd "$caelestia_dir" || exit 1
+            rm -rf build
+            sudo -u "$SUDO_USER" cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/ \
+                -DINSTALL_QSCONFDIR="$caelestia_dir" \
+                > "$CAELESTIA_LOG" 2>&1 && \
+            sudo -u "$SUDO_USER" cmake --build build >> "$CAELESTIA_LOG" 2>&1 && \
+            cmake --install build >> "$CAELESTIA_LOG" 2>&1
+        )
+
+        if [ $? -eq 0 ]; then
+            sucesso "Caelestia Shell compilado e instalado!"
+            chown -R "$SUDO_USER":"$SUDO_USER" "$caelestia_dir"
+        else
+            erro "Falha ao compilar! Verifique o log:"
+            echo -e "${VERMELHO}$CAELESTIA_LOG${SEM_COR}"
+            echo -e "${AMARELO}Últimas linhas:${SEM_COR}"
+            tail -n 20 "$CAELESTIA_LOG"
+            pausa
+            return 1
+        fi
     fi
-    
-    # Corrige permissões
-    chown -R ${SUDO_USER}:${SUDO_USER} "$caelestia_dir"
-    
-    echo ""
-    sucesso "Caelestia Shell instalado com sucesso!"
+
+    chown -R "$SUDO_USER":"$SUDO_USER" "$usuario_home/.config/quickshell" 2>/dev/null || true
+    sucesso "Etapa do Caelestia Shell concluída!"
     pausa
 }
 
-# 9. CONFIGURAR HYPRLAND
 configurar_hyprland() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[9] CONFIGURANDO HYPRLAND${SEM_COR}\n"
-    
-    local usuario_home=$(eval echo ~${SUDO_USER})
+
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
     local config_dir="$usuario_home/.config/hypr"
-    
-    info "Criando arquivo de configuração básico..."
-    
-    # Backup se existir
+
     if [ -f "$config_dir/hyprland.conf" ]; then
-        aviso "Arquivo hyprland.conf já existe. Criando backup..."
+        aviso "Arquivo já existe. Criando backup..."
         cp "$config_dir/hyprland.conf" "$config_dir/hyprland.conf.bak"
     fi
-    
-    # Cria configuração básica
-    cat > "$config_dir/hyprland.conf" << 'EOF'
-# ═══════════════════════════════════════════════════════════════
-# HYPRLAND CONFIGURATION
-# ═══════════════════════════════════════════════════════════════
 
+    cat > "$config_dir/hyprland.conf" << 'EOF'
 monitor=,preferred,auto,1
 
 env = XCURSOR_SIZE,24
@@ -412,11 +380,9 @@ input {
     kb_layout = br
     kb_variant = abnt2
     follow_mouse = 1
-    
     touchpad {
         natural_scroll = true
     }
-    
     sensitivity = 0
 }
 
@@ -460,6 +426,9 @@ dwindle {
 master {
     new_is_master = true
 }
+
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP HYPRLAND_INSTANCE_SIGNATURE
+exec-once = qs -c caelestia
 
 bind = SUPER, Return, exec, foot
 bind = SUPER, Q, killactive,
@@ -509,15 +478,10 @@ bindm = SUPER, mouse:272, movewindow
 bindm = SUPER, mouse:273, resizewindow
 EOF
 
-    # Corrige permissões
-    chown ${SUDO_USER}:${SUDO_USER} "$config_dir/hyprland.conf"
-    
+    chown "$SUDO_USER":"$SUDO_USER" "$config_dir/hyprland.conf"
     sucesso "Hyprland configurado!"
-    echo ""
-    
-    info "Criando configuração do Foot..."
-    mkdir -p "$usuario_home/.config/foot"
-    
+
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.config/foot"
     cat > "$usuario_home/.config/foot/foot.ini" << 'EOF'
 [main]
 term=xterm-256color
@@ -529,114 +493,74 @@ dpi-aware=yes
 background=1e1e2e
 foreground=cdd6f4
 EOF
-
-    chown ${SUDO_USER}:${SUDO_USER} "$usuario_home/.config/foot/foot.ini"
-    
+    chown "$SUDO_USER":"$SUDO_USER" "$usuario_home/.config/foot/foot.ini"
     sucesso "Foot configurado!"
     pausa
 }
 
-# 10. FIX TERMINAL (Se houver problema)
 fix_terminal() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[10] CORRIGINDO PROBLEMAS DO TERMINAL${SEM_COR}\n"
-    
-    local usuario_home=$(eval echo ~${SUDO_USER})
-    
-    info "Garantindo que o Foot está instalado..."
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
     instalar_pacote "foot" "Emulador de Terminal Foot"
-    echo ""
-    
-    info "Corrigindo configurações do Hyprland..."
-    
-    # Substitui terminais problemáticos por foot
+
     if [ -f "$usuario_home/.config/hypr/hyprland.conf" ]; then
         sed -i 's/exec, kitty/exec, foot/g' "$usuario_home/.config/hypr/hyprland.conf"
         sed -i 's/exec, alacritty/exec, foot/g' "$usuario_home/.config/hypr/hyprland.conf"
-        sucesso "Configurações corrigidas no hyprland.conf!"
+        sucesso "Configurações corrigidas!"
     fi
-    
-    if [ -f "$usuario_home/.config/hypr/hyprland.lua" ]; then
-        sed -i 's/"kitty"/"foot"/g' "$usuario_home/.config/hypr/hyprland.lua"
-        sed -i 's/"alacritty"/"foot"/g' "$usuario_home/.config/hypr/hyprland.lua"
-        sucesso "Configurações corrigidas no hyprland.lua!"
-    fi
-    
-    # Corrige permissões
-    chown -R ${SUDO_USER}:${SUDO_USER} "$usuario_home/.config/hypr"
-    
-    echo ""
+
+    chown -R "$SUDO_USER":"$SUDO_USER" "$usuario_home/.config/hypr"
     sucesso "Problemas de terminal corrigidos!"
     pausa
 }
 
-# 11. SETUP CAELESTIA SHELL
 setup_caelestia() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[11] INICIANDO CAELESTIA SHELL${SEM_COR}\n"
-    
-    info "Verificando if Caelestia está instalado..."
-    
+    info "Verificando se o Quickshell (qs) está instalado..."
+
     if command -v qs &> /dev/null; then
-        sucesso "Caelestia Shell detectado!"
-        echo ""
-        
-        aviso "Para aplicar o tema, execute no seu terminal:"
-        echo ""
-        echo -e "${AMARELO}  qs -c caelestia${SEM_COR}"
-        echo ""
-        aviso "Ou reinicie o Hyprland:"
-        echo ""
-        echo -e "${AMARELO}  Super + Shift + R${SEM_COR}"
+        sucesso "Quickshell detectado!"
+        aviso "Para aplicar o tema, rode (como usuário normal): qs -c caelestia"
+        aviso "Ou reinicie o Hyprland: Super + Shift + R"
     else
-        erro "Caelestia Shell não foi detectado!"
-        aviso "Pode ser necessário reiniciar a sessão."
+        erro "Quickshell (qs) não foi detectado!"
+        aviso "Rode a opção [8] para instalar, ou [15] para diagnóstico."
     fi
-    
     pausa
 }
 
-# 12. CRIAR SCRIPT DE ATALHO
 criar_script_atalho() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[12] CRIANDO SCRIPT DE ATALHO${SEM_COR}\n"
-    
-    local usuario_home=$(eval echo ~${SUDO_USER})
-    
-    info "Criando script de inicialização..."
-    
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
+    sudo -u "$SUDO_USER" mkdir -p "$usuario_home/.local/bin"
+
     cat > "$usuario_home/.local/bin/iniciar-caelestia.sh" << 'EOF'
 #!/bin/bash
-# Script para iniciar Caelestia Shell
-
 echo "🚀 Iniciando Caelestia Shell..."
 qs -c caelestia
-
 if [ $? -eq 0 ]; then
     echo "✓ Caelestia ativado com sucesso!"
 else
     echo "✗ Erro ao iniciar Caelestia"
-    echo "Tente reinstalar com: sudo bash instalador.sh"
+    echo "Rode 'sudo bash install.sh' e escolha a opção [15] Diagnóstico Completo."
 fi
 EOF
-
     chmod +x "$usuario_home/.local/bin/iniciar-caelestia.sh"
-    chown ${SUDO_USER}:${SUDO_USER} "$usuario_home/.local/bin/iniciar-caelestia.sh"
-    
+    chown "$SUDO_USER":"$SUDO_USER" "$usuario_home/.local/bin/iniciar-caelestia.sh"
     sucesso "Script criado em ~/.local/bin/iniciar-caelestia.sh"
     pausa
 }
 
-# 13. VERIFICAÇÃO FINAL
 verificacao_final() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}[13] VERIFICAÇÃO FINAL${SEM_COR}\n"
-    
-    echo -e "${CIANO}Verificando pacotes instalados:${SEM_COR}\n"
-    
     local pacotes=("hyprland" "foot" "alacritty" "rofi" "dunst" "networkmanager")
     local todos_ok=true
-    
     for pacote in "${pacotes[@]}"; do
         if pacman -Qi "$pacote" &> /dev/null; then
             sucesso "$pacote instalado"
@@ -645,100 +569,98 @@ verificacao_final() {
             todos_ok=false
         fi
     done
-    
-    echo ""
-    
-    if [ "$todos_ok" = true ]; then
-        echo -e "${VERDE}${NEGRITO}✓ TUDO PRONTO!${SEM_COR}"
-    else
-        aviso "Alguns pacotes faltam. Tente rodar novamente."
-    fi
-    
+    [ "$todos_ok" = true ] && echo -e "${VERDE}${NEGRITO}✓ TUDO PRONTO!${SEM_COR}" || aviso "Alguns pacotes faltam."
     pausa
 }
 
-# 14. RESUMO E PRÓXIMOS PASSOS
 resumo_final() {
     cabecalho
     echo -e "${VERDE}${NEGRITO}🎉 INSTALAÇÃO CONCLUÍDA!${SEM_COR}\n"
-    
-    echo -e "${CIANO}${NEGRITO}📋 RESUMO DO QUE FOI INSTALADO:${SEM_COR}\n"
-    
-    echo -e "  ${VERDE}✓${SEM_COR} Hyprland (Window Manager)"
-    echo -e "  ${VERDE}✓${SEM_COR} Drivers GPU AMD (Mesa, Vulkan)"
-    echo -e "  ${VERDE}✓${SEM_COR} PipeWire (Sistema de Áudio)"
-    echo -e "  ${VERDE}✓${SEM_COR} Terminais (Foot, Alacritty, Kitty)"
-    echo -e "  ${VERDE}✓${SEM_COR} NetworkManager (Gerenciador de Rede)"
-    echo -e "  ${VERDE}✓${SEM_COR} Caelestia Shell (Tema Moderno)"
-    echo -e "  ${VERDE}✓${SEM_COR} Ferramentas de Sistema"
+    echo -e "  ${VERDE}✓${SEM_COR} Hyprland, drivers, PipeWire, terminais, ferramentas, Caelestia Shell"
     echo ""
-    
-    echo -e "${CIANO}${NEGRITO}🚀 PRÓXIMOS PASSOS:${SEM_COR}\n"
-    
-    echo -e "  ${AMARELO}1.${SEM_COR} Reinicie sua sessão Hyprland:"
-    echo -e "     ${ROXO}Super + Shift + R${SEM_COR}"
-    echo ""
-    
-    echo -e "  ${AMARELO}2.${SEM_COR} Ative o Caelestia Shell:"
-    echo -e "     ${ROXO}qs -c caelestia${SEM_COR}"
-    echo ""
-    
-    echo -e "  ${AMARELO}3.${SEM_COR} Ou execute o script de atalho:"
-    echo -e "     ${ROXO}~/.local/bin/iniciar-caelestia.sh${SEM_COR}"
-    echo ""
-    
-    echo -e "${CIANO}${NEGRITO}⌨️  ATALHOS PRINCIPAIS:${SEM_COR}\n"
-    
-    echo -e "  ${VERDE}Super + Return${SEM_COR}    → Terminal (Foot)"
-    echo -e "  ${VERDE}Super + D${SEM_COR}         → Menu de Aplicações (Rofi)"
-    echo -e "  ${VERDE}Super + E${SEM_COR}         → Gerenciador de Arquivos"
-    echo -e "  ${VERDE}Super + Q${SEM_COR}         → Fechar Janela"
-    echo -e "  ${VERDE}Super + Shift + R${SEM_COR} → Reiniciar Hyprland"
-    echo -e "  ${VERDE}Super + Arrows${SEM_COR}    → Navegar Janelas"
-    echo ""
-    
-    echo -e "${AMARELO}${NEGRITO}💡 DICAS:${SEM_COR}\n"
-    
-    echo -e "  • Customize o hyprland.conf em ~/.config/hypr/"
-    echo -e "  • Use Rofi para iniciar aplicações rapidamente"
-    echo -e "  • PipeWire gerencia áudio automaticamente"
-    echo -e "  • Caelestia traz um visual minimalista e moderno"
-    echo ""
-    
-    echo -e "${VERDE}${NEGRITO}✓ Obrigado por usar este instalador!${SEM_COR}\n"
-    
+    echo -e "  ${AMARELO}1.${SEM_COR} Reinicie sua sessão: ${ROXO}Super + Shift + R${SEM_COR}"
+    echo -e "  ${AMARELO}2.${SEM_COR} Ative o Caelestia: ${ROXO}qs -c caelestia${SEM_COR}"
+    echo -e "  ${AMARELO}3.${SEM_COR} Logs em: ${ROXO}$LOG_DIR${SEM_COR}"
     pausa
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# MENU PRINCIPAL
-# ═════════════════════════════════════════════════════════════════════════════
+diagnostico_completo() {
+    cabecalho
+    echo -e "${VERDE}${NEGRITO}[15] DIAGNÓSTICO COMPLETO${SEM_COR}\n"
+    local usuario_home
+    usuario_home=$(eval echo ~"${SUDO_USER}")
+
+    declare -A checks
+    checks["Hyprland"]="pacman -Qi hyprland"
+    checks["Wayland"]="pacman -Qi wayland"
+    checks["Qt6 base"]="pacman -Qi qt6-base"
+    checks["Qt6 declarative"]="pacman -Qi qt6-declarative"
+    checks["Mesa/Vulkan"]="pacman -Qi mesa"
+    checks["PipeWire"]="pacman -Qi pipewire"
+    checks["Quickshell (qs)"]="command -v qs"
+    checks["Caelestia CLI"]="command -v caelestia"
+    checks["Fish"]="pacman -Qi fish"
+    checks["Rofi"]="pacman -Qi rofi"
+    checks["Foot"]="pacman -Qi foot"
+    checks["Dunst"]="pacman -Qi dunst"
+    checks["Polkit"]="pacman -Qi polkit"
+    checks["seatd"]="pacman -Qi seatd"
+    checks["NetworkManager"]="pacman -Qi networkmanager"
+    checks["yay"]="command -v yay"
+
+    local faltando=()
+    echo -e "${CIANO}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${SEM_COR}"
+    for nome in "${!checks[@]}"; do
+        if eval "${checks[$nome]}" &> /dev/null; then
+            printf "  %-22s ${VERDE}✓${SEM_COR}\n" "$nome"
+        else
+            printf "  %-22s ${VERMELHO}✗${SEM_COR}\n" "$nome"
+            faltando+=("$nome")
+        fi
+    done
+    echo -e "${CIANO}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${SEM_COR}"
+
+    if [ -d "$usuario_home/.config/quickshell/caelestia" ]; then
+        sucesso "Diretório do Caelestia encontrado em ~/.config/quickshell/caelestia"
+    else
+        erro "Diretório do Caelestia NÃO encontrado"
+        faltando+=("Diretório caelestia")
+    fi
+
+    if [ ${#faltando[@]} -eq 0 ]; then
+        echo -e "${VERDE}${NEGRITO}Tudo certo!${SEM_COR}"
+    else
+        aviso "Itens faltando: ${faltando[*]}"
+        info "Logs: $INSTALL_LOG / $CAELESTIA_LOG"
+    fi
+    pausa
+}
 
 menu_principal() {
     while true; do
         cabecalho
-        
         echo -e "${CIANO}${NEGRITO}Escolha uma opção:${SEM_COR}\n"
         echo -e "  ${VERDE}[1]${SEM_COR}  Setup Inicial"
         echo -e "  ${VERDE}[2]${SEM_COR}  Instalar Dependências Básicas"
         echo -e "  ${VERDE}[3]${SEM_COR}  Instalar Hyprland"
-        echo -e "  ${VERDE}[4]${SEM_COR}  Instalar Drivers Gráficos"
-        echo -e "  ${VERDE}[5]${SEM_COR}  Instalar PipeWire (Áudio)"
+        echo -e "  ${VERDE}[4]${SEM_COR}  Instalar Drivers Gráficos (auto-detecção)"
+        echo -e "  ${VERDE}[5]${SEM_COR}  Instalar PipeWire"
         echo -e "  ${VERDE}[6]${SEM_COR}  Instalar Terminais"
         echo -e "  ${VERDE}[7]${SEM_COR}  Instalar Ferramentas de Sistema"
-        echo -e "  ${VERDE}[8]${SEM_COR}  Instalar Caelestia Shell"
+        echo -e "  ${VERDE}[8]${SEM_COR}  Instalar Caelestia Shell (corrigido)"
         echo -e "  ${VERDE}[9]${SEM_COR}  Configurar Hyprland"
-        echo -e "  ${VERDE}[10]${SEM_COR} Fix Terminal (Corrigir Problemas)"
+        echo -e "  ${VERDE}[10]${SEM_COR} Fix Terminal"
         echo -e "  ${VERDE}[11]${SEM_COR} Setup Caelestia Shell"
         echo -e "  ${VERDE}[12]${SEM_COR} Criar Script de Atalho"
         echo -e "  ${VERDE}[13]${SEM_COR} Verificação Final"
         echo -e "  ${VERDE}[14]${SEM_COR} Resumo e Próximos Passos"
+        echo -e "  ${VERDE}[15]${SEM_COR} Diagnóstico Completo"
         echo -e "  ${VERDE}[99]${SEM_COR} Executar Tudo (Recomendado)"
         echo -e "  ${VERDE}[0]${SEM_COR}  Sair"
         echo ""
         echo -ne "${AMARELO}Digite a opção: ${SEM_COR}"
         read -r opcao
-        
+
         case $opcao in
             1)  setup_inicial ;;
             2)  instalar_dependencias_basicas ;;
@@ -754,24 +676,16 @@ menu_principal() {
             12) criar_script_atalho ;;
             13) verificacao_final ;;
             14) resumo_final ;;
-            99) # Executar tudo
-                setup_inicial
-                instalar_dependencias_basicas
-                instalar_hyprland
-                instalar_drivers
-                instalar_audio
-                instalar_terminais
-                instalar_ferramentas_sistema
-                instalar_caelestia
-                configurar_hyprland
-                criar_script_atalho
-                verificacao_final
-                resumo_final
+            15) diagnostico_completo ;;
+            99)
+                setup_inicial; instalar_dependencias_basicas; instalar_hyprland
+                instalar_drivers; instalar_audio; instalar_terminais
+                instalar_ferramentas_sistema; instalar_caelestia; configurar_hyprland
+                criar_script_atalho; verificacao_final; diagnostico_completo; resumo_final
                 ;;
             0)
                 cabecalho
                 echo -e "${VERDE}${NEGRITO}Saindo...${SEM_COR}"
-                echo -e "${CIANO}Bons testes com Arch + Hyprland + Caelestia!${SEM_COR}\n"
                 exit 0
                 ;;
             *)
@@ -782,14 +696,9 @@ menu_principal() {
     done
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# EXECUÇÃO PRINCIPAL
-# ═════════════════════════════════════════════════════════════════════════════
-
 main() {
     verificar_root
     menu_principal
 }
 
-# Inicia o script
 main "$@"
